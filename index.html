@@ -43,11 +43,14 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 const wc = (s) => (s||'').trim().split(/\s+/).filter(Boolean).length;
 // 구버전 데이터 마이그레이션: lines -> sections(북마크), summary/revisions -> draft/summaries(이력)
 function migrate(d){
-  (d.videos||[]).forEach(v => (v.chapters||[]).forEach(c => {
-    if(!c.sections) c.sections = [{ id: uid(), title: '', lines: c.lines || [] }];
-    if(!c.summaries) c.summaries = (c.revisions || []).map(r => ({ id: r.id, text: r.text, savedAt: r.savedAt }));
-    if(c.draft === undefined) c.draft = c.summary || '';
-  }));
+  (d.videos||[]).forEach(v => {
+    if(v.finalSummary === undefined) v.finalSummary = '';
+    (v.chapters||[]).forEach(c => {
+      if(!c.sections) c.sections = [{ id: uid(), title: '', lines: c.lines || [] }];
+      if(!c.summaries) c.summaries = (c.revisions || []).map(r => ({ id: r.id, text: r.text, savedAt: r.savedAt }));
+      if(c.draft === undefined) c.draft = c.summary || '';
+    });
+  });
   return d;
 }
 const load = () => { try { return migrate(JSON.parse(localStorage.getItem(KEY)) || { videos: [] }); } catch { return { videos: [] }; } };
@@ -69,7 +72,7 @@ function fromImport(obj){
     highlights: [], draft: '', summaries: [], mastered: false,
   }));
   return { id: uid(), url: obj.url || '', youtubeId: obj.youtubeId || parseYouTubeId(obj.url) || null,
-    title: obj.title || '제목 없는 영상', addedAt: Date.now(), chapters, vocab: [] };
+    title: obj.title || '제목 없는 영상', addedAt: Date.now(), chapters, vocab: [], finalSummary: '' };
 }
 function fromPlain(raw, title, youtubeId){
   const blocks = []; let cur = { title:'Part 1', lines:[] };
@@ -81,6 +84,87 @@ function fromPlain(raw, title, youtubeId){
   });
   push();
   return fromImport({ title, youtubeId, chapters: blocks });
+}
+
+/* ---------- MD 내보내기 (Obsidian 아카이브) ---------- */
+const ymd = (ts) => new Date(ts).toLocaleString('ko-KR');
+const esc = (t) => (t||'').replace(/\|/g,'\\|');
+// 형광펜 표현을 Obsidian ==하이라이트== 로 보존
+function markHl(text, phrases){
+  if(!phrases || !phrases.length) return text;
+  const uniq = [...new Set(phrases)].filter(Boolean).sort((a,b)=>b.length-a.length);
+  const rx = uniq.map(p=>p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+  try { return text.replace(new RegExp('('+rx.join('|')+')','gi'), '==$1=='); } catch { return text; }
+}
+function buildMd(v){
+  const today = new Date().toISOString().slice(0,10);
+  const star = v.vocab.filter(x=>x.starred);
+  const L = [];
+  L.push('---');
+  L.push('title: "'+v.title.replace(/"/g,"'")+'"');
+  if(v.youtubeId) L.push('source: https://youtu.be/'+v.youtubeId);
+  L.push('exported: '+today);
+  L.push('tags: [doac, english-study]');
+  L.push('---','');
+  L.push('# '+v.title,'');
+  if(v.youtubeId) L.push('- 영상: https://youtu.be/'+v.youtubeId);
+  L.push('- 챕터 '+v.chapters.length+'개 · 단어 '+v.vocab.length+'개 (핵심 ⭐ '+star.length+') · 내보내기 '+today);
+  L.push('','---','','## 1. 전체 스크립트','');
+  v.chapters.forEach(c => {
+    L.push('### '+c.title,'');
+    c.sections.forEach((s,si) => {
+      if(s.title) L.push('#### '+String(si+1).padStart(2,'0')+' · '+s.title,'');
+      s.lines.forEach(ln => {
+        L.push('**'+(ln.speaker||'—')+':** '+markHl(ln.en, c.highlights));
+        if(ln.ko) L.push('> '+ln.ko);
+        L.push('');
+      });
+    });
+  });
+  L.push('---','','## 2. 챕터별 Summary + Vocab','');
+  v.chapters.forEach(c => {
+    L.push('### '+c.title+(c.mastered?' ✅':''),'');
+    const latest = c.summaries[0];
+    L.push('**Summary'+(latest?(' (V'+c.summaries.length+' · '+ymd(latest.savedAt)+')'):'')+':**','');
+    L.push(latest ? latest.text : '_없음_','');
+    const cv = v.vocab.filter(x=>x.chapterId===c.id);
+    L.push('**Vocab ('+cv.length+'):**','');
+    if(cv.length){
+      L.push('| 표현 | 뜻 | 예문 | |');
+      L.push('|---|---|---|---|');
+      cv.forEach(x => L.push('| '+esc(x.term)+' | '+esc(x.meaning)+' | '+esc(x.example)+' | '+(x.starred?'⭐':'')+(x.status==='known'?'✅':'')+' |'));
+    } else L.push('_없음_');
+    L.push('');
+  });
+  L.push('---','','## 3. 전체 Summary + 핵심 보카','');
+  L.push((v.finalSummary||'').trim() || '_전체 summary 미작성_','');
+  L.push('**핵심 보카 ⭐ ('+star.length+'):**','');
+  if(star.length){
+    L.push('| 표현 | 뜻 | 예문 |','|---|---|---|');
+    star.forEach(x => L.push('| '+esc(x.term)+' | '+esc(x.meaning)+' | '+esc(x.example)+' |'));
+  } else L.push('_단어장에서 ★로 표시한 단어가 여기에 모입니다_');
+  L.push('','---','','## 4. Summary 작성 히스토리','');
+  v.chapters.forEach(c => {
+    L.push('### '+c.title,'');
+    if(!c.summaries.length){ L.push('_없음_',''); return; }
+    c.summaries.forEach((r,i) => {
+      L.push('- **V'+(c.summaries.length-i)+'** · '+ymd(r.savedAt)+' · '+wc(r.text)+' words');
+      r.text.split('\n').forEach(t => L.push('  > '+t));
+    });
+    L.push('');
+  });
+  L.push('---','','## 5. 내 관점','');
+  L.push('<!-- 영상 전체에 대한 내 생각 · 반론 · 내 삶/일에 적용할 점을 수기로 작성 -->','','- ','');
+  return L.join('\n');
+}
+function downloadMd(v){
+  const md = buildMd(v);
+  const name = (v.title.replace(/[\\/:*?"<>|]/g,'').trim().slice(0,80) || 'doac-export') + '.md';
+  const blob = new Blob([md], { type:'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
 
 /* ---------- ui primitives ---------- */
@@ -319,8 +403,13 @@ function Study({ video, update }){
 
   return (
     <div className="fade-in pt-10">
-      <Label className="text-black/50 dark:text-white/50">Study</Label>
-      <h2 className="mt-2 font-black uppercase tracking-tight text-3xl sm:text-4xl leading-none">{video.title}</h2>
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <Label className="text-black/50 dark:text-white/50">Study</Label>
+          <h2 className="mt-2 font-black uppercase tracking-tight text-3xl sm:text-4xl leading-none">{video.title}</h2>
+        </div>
+        <Btn size="sm" variant="ghost" onClick={()=>downloadMd(video)} title="영상 학습 완료 후 전체 기록을 Obsidian용 .md로 내보내기">⬇ MD 내보내기</Btn>
+      </div>
 
       {/* chapter tabs */}
       <div className="flex flex-wrap gap-0 mt-6 border border-black dark:border-white">
@@ -420,6 +509,18 @@ function Study({ video, update }){
           </div>
         </div>
       </Panel>
+
+      {/* overall summary — MD 내보내기 3번 섹션 */}
+      <Panel className="mt-10">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-black dark:border-white">
+          <Label>Overall — 전체 Summary</Label>
+          <span className="text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">{wc(video.finalSummary)} words</span>
+        </div>
+        <div className="p-4">
+          <textarea value={video.finalSummary} onChange={e=>editVideo(v=>v.finalSummary=e.target.value)} rows={4} placeholder="영상을 다 끝낸 뒤 전체 내용을 영어로 요약하세요 (MD 내보내기의 3번 섹션)" className="w-full border border-black dark:border-white/80 bg-transparent px-3 py-2.5 text-sm outline-none focus:bg-accent/10 placeholder:text-black/40 dark:placeholder:text-white/40" />
+          <p className="mt-2 text-[11px] text-black/40 dark:text-white/40">영상 완료(3–4일) 후: 전체 Summary 작성 → 단어장에서 핵심 단어 ★ 표시 → 우상단 <b>MD 내보내기</b> → Obsidian 아카이브.</p>
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -474,6 +575,7 @@ function VocabRow({ item, video, update }){
     <div className={cx('border-r border-b border-black/15 dark:border-white/20 px-3 py-2.5', item.status==='known' && 'bg-accent/15')}>
       <div className="flex items-center gap-2">
         <input value={item.term} onChange={e=>set(x=>x.term=e.target.value)} className="font-bold bg-transparent flex-1 outline-none" />
+        <button onClick={()=>set(x=>x.starred=!x.starred)} title="핵심 보카 ★ (MD 내보내기 3번 섹션에 모임)" className={cx('text-base leading-none', item.starred?'text-accent':'text-black/25 dark:text-white/30 hover:text-accent')}>★</button>
         <button onClick={()=>set(x=>x.status = x.status==='known'?'learning':'known')} className={cx('text-[10px] uppercase tracking-wide font-bold px-2 py-1 border', item.status==='known'?'bg-accent text-black border-black':'border-black/30 dark:border-white/40 text-black/60 dark:text-white/60')}>{item.status==='known'?'앎':'학습중'}</button>
         <button onClick={del} className="text-black/30 dark:text-white/40 hover:text-red-600 text-sm">✕</button>
       </div>
