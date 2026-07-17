@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DOAC English Lab</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css">
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: { accent: '#50DCBE', ink: '#0a0a0a' },
+      fontFamily: { sans: ['Inter','Pretendard Variable','Pretendard','-apple-system','Helvetica Neue','Arial','sans-serif'] },
+    } }
+  }
+</script>
+<style>
+  html, body { background:#ffffff; color:#0a0a0a; }
+  ::selection { background:#50DCBE; color:#000; }
+  mark.hl { background:#50DCBE; color:#000; padding:0 2px; cursor:pointer; box-decoration-break:clone; -webkit-box-decoration-break:clone; }
+  input[type=checkbox]{ accent-color:#50DCBE; width:16px; height:16px; }
+  .fade-in { animation: fade .25s ease; }
+  @keyframes fade { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
+  @media (prefers-color-scheme: dark){ html,body{ background:#000; color:#fff; } }
+  ::-webkit-scrollbar{ width:10px; height:10px; } ::-webkit-scrollbar-thumb{ background:#0a0a0a; } @media (prefers-color-scheme: dark){ ::-webkit-scrollbar-thumb{ background:#fff; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/plain" id="appsrc">
+const { useState, useEffect, useMemo } = React;
+
+/* ---------- storage ---------- */
+const KEY = 'doac_english_lab_v2';
+const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || { videos: [] }; } catch { return { videos: [] }; } };
+const save = (d) => localStorage.setItem(KEY, JSON.stringify(d));
+const uid = () => Math.random().toString(36).slice(2, 9);
+const wc = (s) => (s||'').trim().split(/\s+/).filter(Boolean).length;
+
+/* ---------- helpers ---------- */
+function parseYouTubeId(url){
+  if(!url) return null;
+  const m = String(url).match(/(?:youtu\.be\/|v=|embed\/|shorts\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : (/^[A-Za-z0-9_-]{11}$/.test(String(url).trim()) ? String(url).trim() : null);
+}
+function fromImport(obj){
+  const chapters = (obj.chapters||[]).map(c => ({
+    id: uid(), title: c.title || 'Part',
+    lines: (c.lines||[]).map(l => ({ speaker: l.speaker||'', en: l.en||'', ko: l.ko||'' })),
+    highlights: [], summary: '', revisions: [], mastered: false,
+  }));
+  return { id: uid(), url: obj.url || '', youtubeId: obj.youtubeId || parseYouTubeId(obj.url) || null,
+    title: obj.title || '제목 없는 영상', addedAt: Date.now(), chapters, vocab: [] };
+}
+function fromPlain(raw, title, youtubeId){
+  const blocks = []; let cur = { title:'Part 1', lines:[] };
+  const push=()=>{ if(cur.lines.length) blocks.push(cur); };
+  raw.replace(/\r/g,'').split('\n').forEach(ln=>{
+    const h = ln.match(/^\s*(?:={3,}|##)\s*(.*)$/);
+    if(h){ push(); cur={ title:(h[1].trim()||`Part ${blocks.length+2}`), lines:[] }; }
+    else if(ln.trim()) cur.lines.push({ speaker:'', en:ln.trim(), ko:'' });
+  });
+  push();
+  return fromImport({ title, youtubeId, chapters: blocks });
+}
+
+/* ---------- ui primitives (Interbrand-inspired: sharp, bold, mono-contrast) ---------- */
+const cx = (...a) => a.filter(Boolean).join(' ');
+function Btn({ variant='primary', size='md', className='', children, ...p }){
+  const base = 'inline-flex items-center justify-center gap-2 font-bold uppercase tracking-wide leading-none transition-colors select-none disabled:opacity-40';
+  const sizes = { sm:'text-[11px] px-3 py-2', md:'text-xs px-5 py-3', lg:'text-sm px-6 py-4' };
+  const variants = {
+    primary: 'bg-accent text-black hover:bg-black hover:text-accent dark:hover:bg-white',
+    dark:    'bg-black text-white hover:bg-accent hover:text-black dark:bg-white dark:text-black dark:hover:bg-accent',
+    ghost:   'border border-black text-black hover:bg-black hover:text-white dark:border-white dark:text-white dark:hover:bg-white dark:hover:text-black',
+    plain:   'text-black/50 hover:text-black dark:text-white/50 dark:hover:text-white',
+  };
+  return <button {...p} className={cx(base, sizes[size], variants[variant], className)}>{children}</button>;
+}
+const Panel = ({className='', children}) => <div className={cx('border border-black dark:border-white/80 bg-white dark:bg-black', className)}>{children}</div>;
+const Label = ({children, className=''}) => <span className={cx('uppercase tracking-[0.18em] text-[10px] font-bold', className)}>{children}</span>;
+
+/* ---------- highlight rendering ---------- */
+function Highlighted({ text, phrases, onRemove }){
+  if(!phrases || !phrases.length) return text;
+  const uniq = [...new Set(phrases)].filter(Boolean).sort((a,b)=>b.length-a.length);
+  const lower = new Set(uniq.map(u=>u.toLowerCase()));
+  const esc = uniq.map(p=>p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+  let re; try { re = new RegExp('('+esc.join('|')+')','gi'); } catch { return text; }
+  return text.split(re).map((part,i)=>
+    lower.has(part.toLowerCase())
+      ? <mark key={i} className="hl" title="클릭하면 형광펜 제거" onClick={()=>onRemove && onRemove(part)}>{part}</mark>
+      : <React.Fragment key={i}>{part}</React.Fragment>
+  );
+}
+
+/* ---------- demo ---------- */
+const DEMO = {
+  title: 'DOAC 데모 — Discomfort & Discipline', youtubeId: 'dQw4w9WgXcQ',
+  chapters: [
+    { title: 'Part 1 · 0:00–30:00 — 불편함을 피하는 대가', lines: [
+      { speaker:'Steven', en:"So many people spend their entire lives running away from discomfort. Why do you think that is?", ko:"정말 많은 사람들이 평생 불편함으로부터 도망치며 살아요. 왜 그렇다고 보세요?" },
+      { speaker:'Guest', en:"Because in the moment it feels safer. But the discomfort you avoid today compounds into a much bigger problem tomorrow.", ko:"그 순간에는 더 안전하게 느껴지니까요. 하지만 오늘 피한 불편함은 내일 훨씬 더 큰 문제로 불어납니다." },
+      { speaker:'Guest', en:"When you sidestep a difficult conversation, it doesn't disappear. It festers. It grows.", ko:"어려운 대화를 회피하면, 그건 사라지지 않아요. 곪고, 커집니다." },
+      { speaker:'Steven', en:"So how do you personally deal with that fear?", ko:"그럼 본인은 그 두려움을 어떻게 다루세요?" },
+      { speaker:'Guest', en:"I've learned to lean into the things that scare me, because on the other side of that fear is almost always growth.", ko:"저를 두렵게 하는 것들에 정면으로 부딪히는 법을 배웠어요. 그 두려움의 반대편엔 거의 항상 성장이 있으니까요." },
+    ]},
+    { title: 'Part 2 · 30:00–58:00 — 동기보다 규율', lines: [
+      { speaker:'Guest', en:"Motivation is unreliable. It shows up when it feels like it and vanishes when you need it most.", ko:"동기는 믿을 게 못 돼요. 내킬 때 나타났다가 정작 가장 필요할 때 사라지죠." },
+      { speaker:'Guest', en:"Discipline is a system you build so you don't have to rely on how you feel.", ko:"규율은 당신의 기분에 의존하지 않아도 되도록 만들어 두는 시스템이에요." },
+      { speaker:'Steven', en:"So your advice would be to stop waiting to feel ready?", ko:"그러니까 준비됐다고 느낄 때까지 기다리지 말라는 조언인 거죠?" },
+      { speaker:'Guest', en:"Exactly. Build the habit, and let the habit carry you.", ko:"맞아요. 습관을 만들고, 그 습관이 당신을 데려가게 하세요." },
+    ]},
+  ],
+};
+
+/* ---------- root ---------- */
+function App(){
+  const [db, setDb] = useState(load);
+  const [route, setRoute] = useState({ name:'home' });
+  useEffect(()=> save(db), [db]);
+  const update = (fn) => setDb(prev => { const next = structuredClone(prev); fn(next); return next; });
+  const video = db.videos.find(v => v.id === route.videoId);
+  return (
+    <div className="min-h-screen">
+      <Header route={route} setRoute={setRoute} />
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-28">
+        {route.name==='home' && <Home db={db} update={update} setRoute={setRoute} />}
+        {route.name==='study' && video && <Study video={video} update={update} />}
+        {route.name==='session' && video && <Session video={video} update={update} />}
+        {(route.name!=='home' && !video) && <p className="mt-16 uppercase tracking-widest text-sm">영상을 찾을 수 없어요.</p>}
+      </main>
+    </div>
+  );
+}
+
+function Header({ route, setRoute }){
+  const NavItem = ({name, children}) => (
+    <button onClick={()=>setRoute({...route, name})}
+      className={cx('px-4 sm:px-5 h-full flex items-center uppercase tracking-widest text-xs font-bold border-l border-black dark:border-white',
+        route.name===name ? 'bg-accent text-black' : 'hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black')}>
+      {children}
+    </button>
+  );
+  return (
+    <header className="sticky top-0 z-30 bg-white/95 dark:bg-black/95 backdrop-blur border-b border-black dark:border-white">
+      <div className="max-w-6xl mx-auto pl-4 sm:pl-6 flex items-stretch h-16">
+        <button onClick={()=>setRoute({name:'home'})} className="flex items-center gap-2.5 font-black uppercase tracking-tight text-lg sm:text-xl">
+          <span className="w-3.5 h-3.5 bg-accent inline-block"></span>
+          DOAC ENGLISH LAB
+        </button>
+        {route.name!=='home' && (
+          <nav className="ml-auto flex items-stretch border-l-0">
+            <NavItem name="study">학습</NavItem>
+            <NavItem name="session">세션</NavItem>
+          </nav>
+        )}
+      </div>
+    </header>
+  );
+}
+
+/* ---------- home ---------- */
+function Home({ db, update, setRoute }){
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState('json');
+  const [url, setUrl] = useState(''); const [title, setTitle] = useState('');
+  const [json, setJson] = useState(''); const [plain, setPlain] = useState(''); const [err, setErr] = useState('');
+  const addVideo = (v) => { update(d => d.videos.unshift(v)); setOpen(false); setUrl(''); setTitle(''); setJson(''); setPlain(''); setErr(''); setRoute({ name:'study', videoId: v.id }); };
+  const addJson = () => { try { const obj = JSON.parse(json); if(!obj.chapters) throw new Error('chapters 없음'); addVideo(fromImport(obj)); } catch(e){ setErr('JSON 파싱 오류: ' + e.message); } };
+  const addPlain = () => { if(!plain.trim()){ setErr('대본을 붙여넣으세요.'); return; } addVideo(fromPlain(plain, title.trim()||'제목 없는 영상', parseYouTubeId(url))); };
+  const inputCls = 'w-full border border-black dark:border-white/80 bg-transparent px-4 py-3 text-sm outline-none focus:bg-accent/10 placeholder:text-black/40 dark:placeholder:text-white/40';
+
+  return (
+    <div className="fade-in">
+      {/* hero */}
+      <section className="pt-14 pb-10 border-b border-black dark:border-white">
+        <Label className="text-black/60 dark:text-white/60">화 · 수 · 목 ROUTINE</Label>
+        <h1 className="mt-5 font-black uppercase leading-[0.86] tracking-tight text-6xl sm:text-8xl">
+          English<br/><span className="text-accent">Lab</span>
+        </h1>
+        <p className="mt-6 max-w-xl text-sm sm:text-base text-black/70 dark:text-white/70 leading-relaxed">
+          DOAC 영상 → 인물별 인터뷰 스크립트(한글 포함) → 형광펜으로 모르는 표현 수집 → 단어장 → summary → speaking.
+          세션 전에 준비하고, 세션에서 시험.
+        </p>
+        <div className="mt-8 flex flex-wrap gap-0">
+          <Btn size="lg" variant="dark" onClick={()=>setOpen(o=>!o)}>+ 영상 추가</Btn>
+          <Btn size="lg" variant="ghost" className="border-l-0" onClick={()=>addVideo(fromImport(DEMO))}>데모 체험</Btn>
+        </div>
+      </section>
+
+      {open && (
+        <Panel className="mt-0 border-t-0 p-6 max-w-3xl">
+          <div className="flex gap-0 mb-5">
+            <Btn size="sm" variant={tab==='json'?'primary':'ghost'} onClick={()=>setTab('json')}>스크립트 JSON</Btn>
+            <Btn size="sm" variant={tab==='plain'?'primary':'ghost'} className="border-l-0" onClick={()=>setTab('plain')}>대본 붙여넣기</Btn>
+          </div>
+          {tab==='json' ? (
+            <div className="space-y-3">
+              <p className="text-xs text-black/60 dark:text-white/60">Claude에게 유튜브 링크를 주면 만들어주는 인터뷰 스크립트 JSON을 붙여넣으세요. (인물별 대사 + 한글 + 30분 챕터)</p>
+              <textarea value={json} onChange={e=>setJson(e.target.value)} rows={8} placeholder='{ "title":"...", "youtubeId":"...", "chapters":[ { "title":"Part 1 · 0:00–30:00", "lines":[ {"speaker":"Steven","en":"...","ko":"..."} ] } ] }' className={cx(inputCls,'font-mono text-xs')} />
+              <Btn variant="primary" onClick={addJson}>추가하고 학습 시작</Btn>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="YOUTUBE 링크 (선택)" className={inputCls} />
+              <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="제목 (선택)" className={inputCls} />
+              <textarea value={plain} onChange={e=>setPlain(e.target.value)} rows={6} placeholder={"## Part 1 — ...\n영어 대본 줄들...\n\n## Part 2 — ..."} className={cx(inputCls,'font-mono text-sm')} />
+              <Btn variant="primary" onClick={addPlain}>추가하고 학습 시작</Btn>
+            </div>
+          )}
+          {err && <p className="text-sm text-red-600 mt-3">{err}</p>}
+          <button onClick={()=>{setOpen(false);setErr('');}} className="mt-4 uppercase tracking-widest text-[11px] font-bold text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white">취소</button>
+        </Panel>
+      )}
+
+      {/* library */}
+      <section className="mt-12">
+        <div className="flex items-center justify-between border-b border-black dark:border-white pb-2 mb-6">
+          <Label>Library</Label>
+          <Label className="text-black/50 dark:text-white/50">{db.videos.length} 영상</Label>
+        </div>
+        {db.videos.length===0 && !open && (
+          <div className="py-24 text-center">
+            <p className="uppercase tracking-widest text-sm text-black/40 dark:text-white/40">아직 영상이 없습니다</p>
+            <p className="mt-2 text-sm text-black/60 dark:text-white/60">데모로 체험하거나 스크립트를 추가하세요.</p>
+          </div>
+        )}
+        <div className="grid gap-0 sm:grid-cols-2 lg:grid-cols-3 border-l border-t border-black dark:border-white">
+          {db.videos.map(v => {
+            const mastered = v.chapters.filter(c=>c.mastered).length;
+            const learning = v.vocab.filter(x=>x.status==='learning').length;
+            return (
+              <div key={v.id} className="border-r border-b border-black dark:border-white flex flex-col group">
+                {v.youtubeId && <div className="relative overflow-hidden border-b border-black dark:border-white bg-black"><img src={`https://img.youtube.com/vi/${v.youtubeId}/hqdefault.jpg`} alt="" className="w-full h-40 object-cover grayscale group-hover:grayscale-0 transition-all duration-300" /></div>}
+                <div className="p-4 flex flex-col flex-1">
+                  <h3 className="font-bold uppercase tracking-tight text-sm leading-tight line-clamp-2 min-h-[2.5rem]">{v.title}</h3>
+                  <div className="mt-3 space-y-1 text-[11px] uppercase tracking-wider text-black/60 dark:text-white/60">
+                    <div className="flex justify-between"><span>Chapters</span><span className="text-black dark:text-white font-bold">{mastered}/{v.chapters.length}</span></div>
+                    <div className="flex justify-between"><span>Vocab / 학습중</span><span className="text-black dark:text-white font-bold">{v.vocab.length} / {learning}</span></div>
+                  </div>
+                  <div className="mt-4 flex gap-0 pt-2">
+                    <Btn size="sm" variant="primary" className="flex-1" onClick={()=>setRoute({name:'study', videoId:v.id})}>학습</Btn>
+                    <Btn size="sm" variant="dark" className="flex-1 border-l border-black dark:border-white" onClick={()=>setRoute({name:'session', videoId:v.id})}>세션</Btn>
+                    <Btn size="sm" variant="ghost" className="border-l-0 px-3" onClick={()=>{ if(confirm('삭제할까요?')) update(d=>{ d.videos = d.videos.filter(x=>x.id!==v.id); }); }}>✕</Btn>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/* ---------- study ---------- */
+function Study({ video, update }){
+  const [chIdx, setChIdx] = useState(0);
+  const [showKo, setShowKo] = useState(true);
+  const [sel, setSel] = useState('');
+  const ch = video.chapters[Math.min(chIdx, video.chapters.length-1)];
+  const editVideo = (fn) => update(d => fn(d.videos.find(x=>x.id===video.id)));
+  const editCh = (fn) => editVideo(v => fn(v.chapters.find(c=>c.id===ch.id)));
+  const onSelect = () => { const s = window.getSelection().toString().trim().replace(/\s+/g,' '); if(s && s.length<=80) setSel(s); };
+  const addHighlight = () => { if(!sel) return; editCh(c => { if(!c.highlights.includes(sel)) c.highlights.push(sel); }); setSel(''); window.getSelection().removeAllRanges(); };
+  const removeHighlight = (phrase) => editCh(c => { c.highlights = c.highlights.filter(h => h.toLowerCase()!==phrase.toLowerCase()); });
+  const collectVocab = () => editVideo(v => {
+    const chObj = v.chapters.find(c=>c.id===ch.id);
+    const existing = new Set(v.vocab.map(x=>x.term.toLowerCase())); let added=0;
+    chObj.highlights.forEach(term => { if(!existing.has(term.toLowerCase())){ v.vocab.push({ id:uid(), term, meaning:'', example:'', chapterId:ch.id, status:'learning', addedAt:Date.now() }); existing.add(term.toLowerCase()); added++; } });
+    chObj._justAdded = added;
+  });
+  const chVocab = video.vocab.filter(x=>x.chapterId===ch.id);
+
+  return (
+    <div className="fade-in pt-10">
+      <Label className="text-black/50 dark:text-white/50">Study</Label>
+      <h2 className="mt-2 font-black uppercase tracking-tight text-3xl sm:text-4xl leading-none">{video.title}</h2>
+
+      {/* chapter tabs */}
+      <div className="flex flex-wrap gap-0 mt-6 border border-black dark:border-white">
+        {video.chapters.map((c,i)=>(
+          <button key={c.id} onClick={()=>setChIdx(i)}
+            className={cx('px-4 py-3 text-xs font-bold uppercase tracking-wide border-r border-black dark:border-white last:border-r-0 flex items-center gap-2',
+              i===chIdx ? 'bg-black text-white dark:bg-white dark:text-black' : 'hover:bg-accent hover:text-black')}>
+            {c.mastered && <span className="w-2 h-2 bg-accent inline-block"></span>}{c.title}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-0 mt-0 border-l border-r border-b border-black dark:border-white">
+        {/* left */}
+        <div className="border-b lg:border-b-0 lg:border-r border-black dark:border-white">
+          {video.youtubeId && (
+            <div className="aspect-video bg-black border-b border-black dark:border-white">
+              <iframe className="w-full h-full" src={`https://www.youtube.com/embed/${video.youtubeId}`} title="video" allowFullScreen></iframe>
+            </div>
+          )}
+          <SummarySection ch={ch} editCh={editCh} />
+        </div>
+
+        {/* right: transcript */}
+        <div className="flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-black dark:border-white">
+            <Label>Interview Script</Label>
+            <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider font-bold">
+              <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={showKo} onChange={e=>setShowKo(e.target.checked)} /> 한글</label>
+              <span className="text-black/50 dark:text-white/50">HL {ch.highlights.length}</span>
+            </div>
+          </div>
+          {sel && (
+            <div className="flex items-center gap-2 px-4 py-2.5 bg-accent text-black border-b border-black">
+              <span className="flex-1 truncate text-sm font-medium">“{sel}”</span>
+              <button onClick={addHighlight} className="uppercase tracking-wide text-[11px] font-black border border-black px-3 py-1.5 hover:bg-black hover:text-accent">형광펜</button>
+            </div>
+          )}
+          <div onMouseUp={onSelect} onTouchEnd={onSelect} className="p-4 space-y-4 leading-relaxed text-[15px] max-h-[52vh] overflow-y-auto">
+            {ch.lines.map((ln,i)=>(
+              <div key={i}>
+                {ln.speaker && <div className="mb-0.5"><Label className="text-accent">{ln.speaker}</Label></div>}
+                <span><Highlighted text={ln.en} phrases={ch.highlights} onRemove={removeHighlight} /></span>
+                {showKo && ln.ko && <div className="text-sm text-black/50 dark:text-white/50 mt-1">{ln.ko}</div>}
+              </div>
+            ))}
+          </div>
+          <div className="mt-auto flex items-center justify-between gap-2 px-4 py-3 border-t border-black dark:border-white">
+            <p className="text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">드래그 → 형광펜 → 정리</p>
+            <Btn size="sm" variant="primary" onClick={collectVocab}>단어 정리 → 단어장</Btn>
+          </div>
+          {typeof ch._justAdded==='number' && <p className="px-4 pb-3 -mt-1 text-[11px] uppercase tracking-wide font-bold text-accent">{ch._justAdded}개 추가됨</p>}
+        </div>
+      </div>
+
+      {/* vocab */}
+      <Panel className="mt-10 border-t">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-black dark:border-white">
+          <Label>Vocabulary — 이 챕터 · {chVocab.length}</Label>
+          <label className="flex items-center gap-2 text-[11px] uppercase tracking-wider font-bold cursor-pointer"><input type="checkbox" checked={ch.mastered} onChange={e=>editCh(c=>c.mastered=e.target.checked)} /> 챕터 마스터</label>
+        </div>
+        <div className="p-4">
+          {chVocab.length===0 && <p className="text-sm text-black/50 dark:text-white/50">형광펜으로 칠하고 “단어 정리”를 누르면 여기에 모여요.</p>}
+          <div className="grid sm:grid-cols-2 gap-0 border-l border-t border-black/15 dark:border-white/20">
+            {chVocab.map(item => <VocabRow key={item.id} item={item} video={video} update={update} />)}
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function SummarySection({ ch, editCh }){
+  const saveRevision = () => { if(!ch.summary.trim()) return; editCh(c => c.revisions.unshift({ id:uid(), text:c.summary, savedAt:Date.now() })); };
+  const restore = (text) => editCh(c => c.summary = text);
+  const delRev = (id) => editCh(c => c.revisions = c.revisions.filter(r=>r.id!==id));
+  return (
+    <div className="p-4">
+      <div className="flex items-center justify-between mb-3"><Label>Summary — 작성</Label><span className="text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">{wc(ch.summary)} words</span></div>
+      <textarea value={ch.summary} onChange={e=>editCh(c=>c.summary=e.target.value)} rows={5} placeholder="이 챕터를 영어로 요약해서 써보세요 (세션 전에 준비)" className="w-full border border-black dark:border-white/80 bg-transparent px-3 py-2.5 text-sm outline-none focus:bg-accent/10 placeholder:text-black/40 dark:placeholder:text-white/40" />
+      <div className="flex justify-end mt-2"><Btn size="sm" variant="dark" onClick={saveRevision}>수정본 저장</Btn></div>
+      {ch.revisions.length>0 && (
+        <div className="mt-4 border-t border-black/15 dark:border-white/20 pt-3">
+          <Label className="text-black/60 dark:text-white/60">Revisions · {ch.revisions.length}</Label>
+          <div className="mt-2 space-y-2">
+            {ch.revisions.map((r,i)=>(
+              <div key={r.id} className="border border-black/15 dark:border-white/20 p-2.5">
+                <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-black/50 dark:text-white/50 mb-1">
+                  <span className="font-bold text-black dark:text-white">V{ch.revisions.length - i}</span>
+                  <span>{new Date(r.savedAt).toLocaleString('ko-KR')}</span>
+                  <span>· {wc(r.text)}w</span>
+                  <button onClick={()=>restore(r.text)} className="ml-auto font-bold text-black dark:text-white hover:text-accent">불러오기</button>
+                  <button onClick={()=>delRev(r.id)} className="hover:text-red-600">삭제</button>
+                </div>
+                <p className="text-sm whitespace-pre-wrap">{r.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VocabRow({ item, video, update }){
+  const set = (fn) => update(d => { const v=d.videos.find(x=>x.id===video.id); fn(v.vocab.find(x=>x.id===item.id)); });
+  const del = () => update(d => { const v=d.videos.find(x=>x.id===video.id); v.vocab=v.vocab.filter(x=>x.id!==item.id); });
+  return (
+    <div className={cx('border-r border-b border-black/15 dark:border-white/20 px-3 py-2.5', item.status==='known' && 'bg-accent/15')}>
+      <div className="flex items-center gap-2">
+        <input value={item.term} onChange={e=>set(x=>x.term=e.target.value)} className="font-bold bg-transparent flex-1 outline-none" />
+        <button onClick={()=>set(x=>x.status = x.status==='known'?'learning':'known')} className={cx('text-[10px] uppercase tracking-wide font-bold px-2 py-1 border', item.status==='known'?'bg-accent text-black border-black':'border-black/30 dark:border-white/40 text-black/60 dark:text-white/60')}>{item.status==='known'?'앎':'학습중'}</button>
+        <button onClick={del} className="text-black/30 dark:text-white/40 hover:text-red-600 text-sm">✕</button>
+      </div>
+      <input value={item.meaning} onChange={e=>set(x=>x.meaning=e.target.value)} placeholder="뜻 (한국어)" className="mt-1.5 w-full bg-transparent text-sm outline-none border-b border-dashed border-black/20 dark:border-white/25 py-0.5 placeholder:text-black/30 dark:placeholder:text-white/30" />
+      <input value={item.example} onChange={e=>set(x=>x.example=e.target.value)} placeholder="예문" className="mt-1 w-full bg-transparent text-sm text-black/60 dark:text-white/60 outline-none py-0.5 placeholder:text-black/30 dark:placeholder:text-white/30" />
+    </div>
+  );
+}
+
+/* ---------- session ---------- */
+function Session({ video, update }){
+  const [mode, setMode] = useState('quiz');
+  return (
+    <div className="fade-in pt-10">
+      <Label className="text-black/50 dark:text-white/50">Session · 20 min</Label>
+      <h2 className="mt-2 font-black uppercase tracking-tight text-3xl sm:text-4xl leading-none">{video.title}</h2>
+      <div className="flex gap-0 mt-6 border border-black dark:border-white w-fit">
+        {[['quiz','단어 시험'],['summary','Summary 리뷰'],['speaking','Speaking']].map(([k,t],i)=>(
+          <button key={k} onClick={()=>setMode(k)} className={cx('px-5 py-3 text-xs font-bold uppercase tracking-wide', i>0&&'border-l border-black dark:border-white', mode===k?'bg-black text-white dark:bg-white dark:text-black':'hover:bg-accent hover:text-black')}>{t}</button>
+        ))}
+      </div>
+      <div className="mt-6">
+        {mode==='quiz' && <Quiz video={video} update={update} />}
+        {mode==='summary' && <SummaryReview video={video} />}
+        {mode==='speaking' && <Speaking />}
+      </div>
+    </div>
+  );
+}
+
+function Quiz({ video, update }){
+  const pool = useMemo(()=> video.vocab.filter(x=>x.status==='learning'), [video]);
+  const [i, setI] = useState(0); const [reveal, setReveal] = useState(false);
+  const [done, setDone] = useState(false); const [score, setScore] = useState({ pass:0, fail:0 });
+  if(pool.length===0) return <Empty>학습중인 단어가 없어요. 학습 탭에서 형광펜 → 단어 정리로 추가하세요.</Empty>;
+  if(done) return (
+    <Panel className="p-10 text-center max-w-lg">
+      <Label className="text-accent">Complete</Label>
+      <p className="mt-3 font-black uppercase text-2xl">시험 완료</p>
+      <p className="mt-3 uppercase tracking-wide text-sm">맞음 {score.pass} · 틀림 {score.fail}</p>
+      <div className="mt-6 flex justify-center"><Btn variant="dark" onClick={()=>{setI(0);setReveal(false);setDone(false);setScore({pass:0,fail:0});}}>다시 시험</Btn></div>
+    </Panel>
+  );
+  const item = pool[i];
+  const mark = (ok) => {
+    setScore(s=>({ pass:s.pass+(ok?1:0), fail:s.fail+(ok?0:1) }));
+    if(ok) update(d=>{ const v=d.videos.find(x=>x.id===video.id); const t=v.vocab.find(x=>x.id===item.id); if(t) t.status='known'; });
+    const next=i+1; if(next>=pool.length) setDone(true); else { setI(next); setReveal(false); }
+  };
+  return (
+    <Panel className="max-w-2xl">
+      <div className="flex justify-between items-center px-4 py-2.5 border-b border-black dark:border-white"><Label>Vocab Test</Label><Label className="text-black/50 dark:text-white/50">{i+1} / {pool.length}</Label></div>
+      <div className="px-6 py-12 text-center">
+        <div className="font-black uppercase tracking-tight text-4xl sm:text-5xl break-words">{item.term}</div>
+        {reveal ? (
+          <div className="mt-8">
+            <p className="text-xl">{item.meaning || <span className="text-black/40 dark:text-white/40">뜻 미입력</span>}</p>
+            {item.example && <p className="mt-2 text-sm text-black/50 dark:text-white/50 italic">“{item.example}”</p>}
+          </div>
+        ) : <div className="mt-8 flex justify-center"><Btn variant="ghost" onClick={()=>setReveal(true)}>뜻 확인</Btn></div>}
+      </div>
+      {reveal && (
+        <div className="grid grid-cols-2 border-t border-black dark:border-white">
+          <button onClick={()=>mark(false)} className="py-5 uppercase tracking-wide font-bold text-sm border-r border-black dark:border-white hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black">아직 몰라</button>
+          <button onClick={()=>mark(true)} className="py-5 uppercase tracking-wide font-bold text-sm bg-accent text-black hover:bg-black hover:text-accent">알아</button>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function SummaryReview({ video }){
+  return (
+    <div className="border-l border-t border-black dark:border-white">
+      {video.chapters.map(c => (
+        <div key={c.id} className="border-r border-b border-black dark:border-white p-5">
+          <div className="flex items-center gap-2 mb-2">{c.mastered && <span className="w-2 h-2 bg-accent inline-block"></span>}<Label>{c.title}</Label></div>
+          {c.summary.trim() ? <p className="whitespace-pre-wrap text-sm leading-relaxed">{c.summary}</p> : <p className="text-sm text-black/40 dark:text-white/40">summary 미작성</p>}
+          <p className="mt-3 text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">{wc(c.summary)} words · 수정본 {c.revisions.length} · 세션에서 소리내어 읽고 첨삭</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Speaking(){
+  const [sec, setSec] = useState(0); const [run, setRun] = useState(false);
+  useEffect(()=>{ if(!run) return; const t=setInterval(()=>setSec(s=>s+1),1000); return ()=>clearInterval(t); }, [run]);
+  const mm=String(Math.floor(sec/60)).padStart(2,'0'), ss=String(sec%60).padStart(2,'0');
+  return (
+    <Panel className="max-w-2xl">
+      <div className="px-4 py-2.5 border-b border-black dark:border-white"><Label>Speaking — Summary 없이</Label></div>
+      <div className="px-6 py-10 text-center border-b border-black dark:border-white">
+        <div className="font-black tabular-nums text-7xl tracking-tight">{mm}:{ss}</div>
+        <div className="mt-6 flex gap-0 justify-center">
+          <Btn variant="primary" onClick={()=>setRun(r=>!r)}>{run?'일시정지':'시작'}</Btn>
+          <Btn variant="ghost" className="border-l-0" onClick={()=>{setSec(0);setRun(false);}}>리셋</Btn>
+        </div>
+      </div>
+      <ul className="p-5 space-y-3 text-sm">
+        {['핵심 주장을 한 문장으로','근거·예시 2개','내 생각/반응','새로 배운 표현 3개 이상 사용'].map((t,i)=>(
+          <li key={i} className="flex items-center gap-2.5"><input type="checkbox" /> {t}</li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+const Empty = ({children}) => <div className="border border-black dark:border-white py-20 text-center text-sm text-black/50 dark:text-white/50 max-w-2xl">{children}</div>;
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+<script>
+  (function(){
+    try {
+      const src = document.getElementById('appsrc').textContent;
+      const { code } = Babel.transform(src, { presets: [['react', { runtime: 'classic' }]] });
+      (0, eval)(code);
+    } catch (e) {
+      document.getElementById('root').innerHTML = '<pre style="padding:16px;color:#b91c1c;white-space:pre-wrap;font:13px monospace">'+ (e && e.message ? e.message : e) +'</pre>';
+      console.error(e);
+    }
+  })();
+</script>
+</body>
+</html>
