@@ -35,14 +35,23 @@
 <div id="root"></div>
 
 <script type="text/plain" id="appsrc">
-const { useState, useEffect, useMemo } = React;
+const { useState, useEffect, useMemo, useRef } = React;
 
 /* ---------- storage ---------- */
 const KEY = 'doac_english_lab_v2';
-const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || { videos: [] }; } catch { return { videos: [] }; } };
-const save = (d) => localStorage.setItem(KEY, JSON.stringify(d));
 const uid = () => Math.random().toString(36).slice(2, 9);
 const wc = (s) => (s||'').trim().split(/\s+/).filter(Boolean).length;
+// 구버전 데이터 마이그레이션: lines -> sections(북마크), summary/revisions -> draft/summaries(이력)
+function migrate(d){
+  (d.videos||[]).forEach(v => (v.chapters||[]).forEach(c => {
+    if(!c.sections) c.sections = [{ id: uid(), title: '', lines: c.lines || [] }];
+    if(!c.summaries) c.summaries = (c.revisions || []).map(r => ({ id: r.id, text: r.text, savedAt: r.savedAt }));
+    if(c.draft === undefined) c.draft = c.summary || '';
+  }));
+  return d;
+}
+const load = () => { try { return migrate(JSON.parse(localStorage.getItem(KEY)) || { videos: [] }); } catch { return { videos: [] }; } };
+const save = (d) => localStorage.setItem(KEY, JSON.stringify(d));
 
 /* ---------- helpers ---------- */
 function parseYouTubeId(url){
@@ -51,10 +60,13 @@ function parseYouTubeId(url){
   return m ? m[1] : (/^[A-Za-z0-9_-]{11}$/.test(String(url).trim()) ? String(url).trim() : null);
 }
 function fromImport(obj){
+  const normLine = (l) => ({ speaker: l.speaker||'', en: l.en||'', ko: l.ko||'' });
   const chapters = (obj.chapters||[]).map(c => ({
     id: uid(), title: c.title || 'Part',
-    lines: (c.lines||[]).map(l => ({ speaker: l.speaker||'', en: l.en||'', ko: l.ko||'' })),
-    highlights: [], summary: '', revisions: [], mastered: false,
+    sections: (c.sections && c.sections.length)
+      ? c.sections.map(s => ({ id: uid(), title: s.title||'', lines: (s.lines||[]).map(normLine) }))
+      : [{ id: uid(), title: '', lines: (c.lines||[]).map(normLine) }],
+    highlights: [], draft: '', summaries: [], mastered: false,
   }));
   return { id: uid(), url: obj.url || '', youtubeId: obj.youtubeId || parseYouTubeId(obj.url) || null,
     title: obj.title || '제목 없는 영상', addedAt: Date.now(), chapters, vocab: [] };
@@ -71,7 +83,7 @@ function fromPlain(raw, title, youtubeId){
   return fromImport({ title, youtubeId, chapters: blocks });
 }
 
-/* ---------- ui primitives (Interbrand-inspired: sharp, bold, mono-contrast) ---------- */
+/* ---------- ui primitives ---------- */
 const cx = (...a) => a.filter(Boolean).join(' ');
 function Btn({ variant='primary', size='md', className='', children, ...p }){
   const base = 'inline-flex items-center justify-center gap-2 font-bold uppercase tracking-wide leading-none transition-colors select-none disabled:opacity-40';
@@ -105,18 +117,24 @@ function Highlighted({ text, phrases, onRemove }){
 const DEMO = {
   title: 'DOAC 데모 — Discomfort & Discipline', youtubeId: 'dQw4w9WgXcQ',
   chapters: [
-    { title: 'Part 1 · 0:00–30:00 — 불편함을 피하는 대가', lines: [
-      { speaker:'Steven', en:"So many people spend their entire lives running away from discomfort. Why do you think that is?", ko:"정말 많은 사람들이 평생 불편함으로부터 도망치며 살아요. 왜 그렇다고 보세요?" },
-      { speaker:'Guest', en:"Because in the moment it feels safer. But the discomfort you avoid today compounds into a much bigger problem tomorrow.", ko:"그 순간에는 더 안전하게 느껴지니까요. 하지만 오늘 피한 불편함은 내일 훨씬 더 큰 문제로 불어납니다." },
-      { speaker:'Guest', en:"When you sidestep a difficult conversation, it doesn't disappear. It festers. It grows.", ko:"어려운 대화를 회피하면, 그건 사라지지 않아요. 곪고, 커집니다." },
-      { speaker:'Steven', en:"So how do you personally deal with that fear?", ko:"그럼 본인은 그 두려움을 어떻게 다루세요?" },
-      { speaker:'Guest', en:"I've learned to lean into the things that scare me, because on the other side of that fear is almost always growth.", ko:"저를 두렵게 하는 것들에 정면으로 부딪히는 법을 배웠어요. 그 두려움의 반대편엔 거의 항상 성장이 있으니까요." },
+    { title: 'Part 1 · 0:00–30:00 — 불편함을 피하는 대가', sections: [
+      { title: '00:00 — 회피의 복리', lines: [
+        { speaker:'Steven', en:"So many people spend their entire lives running away from discomfort. Why do you think that is?", ko:"정말 많은 사람들이 평생 불편함으로부터 도망치며 살아요. 왜 그렇다고 보세요?" },
+        { speaker:'Guest', en:"Because in the moment it feels safer. But the discomfort you avoid today compounds into a much bigger problem tomorrow.", ko:"그 순간에는 더 안전하게 느껴지니까요. 하지만 오늘 피한 불편함은 내일 훨씬 더 큰 문제로 불어납니다." },
+        { speaker:'Guest', en:"When you sidestep a difficult conversation, it doesn't disappear. It festers. It grows.", ko:"어려운 대화를 회피하면, 그건 사라지지 않아요. 곪고, 커집니다." },
+      ]},
+      { title: '15:00 — 두려움을 다루는 법', lines: [
+        { speaker:'Steven', en:"So how do you personally deal with that fear?", ko:"그럼 본인은 그 두려움을 어떻게 다루세요?" },
+        { speaker:'Guest', en:"I've learned to lean into the things that scare me, because on the other side of that fear is almost always growth.", ko:"저를 두렵게 하는 것들에 정면으로 부딪히는 법을 배웠어요. 그 두려움의 반대편엔 거의 항상 성장이 있으니까요." },
+      ]},
     ]},
-    { title: 'Part 2 · 30:00–58:00 — 동기보다 규율', lines: [
-      { speaker:'Guest', en:"Motivation is unreliable. It shows up when it feels like it and vanishes when you need it most.", ko:"동기는 믿을 게 못 돼요. 내킬 때 나타났다가 정작 가장 필요할 때 사라지죠." },
-      { speaker:'Guest', en:"Discipline is a system you build so you don't have to rely on how you feel.", ko:"규율은 당신의 기분에 의존하지 않아도 되도록 만들어 두는 시스템이에요." },
-      { speaker:'Steven', en:"So your advice would be to stop waiting to feel ready?", ko:"그러니까 준비됐다고 느낄 때까지 기다리지 말라는 조언인 거죠?" },
-      { speaker:'Guest', en:"Exactly. Build the habit, and let the habit carry you.", ko:"맞아요. 습관을 만들고, 그 습관이 당신을 데려가게 하세요." },
+    { title: 'Part 2 · 30:00–58:00 — 동기보다 규율', sections: [
+      { title: '30:00 — 동기는 못 믿는다', lines: [
+        { speaker:'Guest', en:"Motivation is unreliable. It shows up when it feels like it and vanishes when you need it most.", ko:"동기는 믿을 게 못 돼요. 내킬 때 나타났다가 정작 가장 필요할 때 사라지죠." },
+        { speaker:'Guest', en:"Discipline is a system you build so you don't have to rely on how you feel.", ko:"규율은 당신의 기분에 의존하지 않아도 되도록 만들어 두는 시스템이에요." },
+        { speaker:'Steven', en:"So your advice would be to stop waiting to feel ready?", ko:"그러니까 준비됐다고 느낄 때까지 기다리지 말라는 조언인 거죠?" },
+        { speaker:'Guest', en:"Exactly. Build the habit, and let the habit carry you.", ko:"맞아요. 습관을 만들고, 그 습관이 당신을 데려가게 하세요." },
+      ]},
     ]},
   ],
 };
@@ -180,7 +198,6 @@ function Home({ db, update, setRoute }){
 
   return (
     <div className="fade-in">
-      {/* hero */}
       <section className="pt-14 pb-10 border-b border-black dark:border-white">
         <Label className="text-black/60 dark:text-white/60">화 · 수 · 목 ROUTINE</Label>
         <h1 className="mt-5 font-black uppercase leading-[0.86] tracking-tight text-6xl sm:text-8xl">
@@ -204,8 +221,8 @@ function Home({ db, update, setRoute }){
           </div>
           {tab==='json' ? (
             <div className="space-y-3">
-              <p className="text-xs text-black/60 dark:text-white/60">Claude에게 유튜브 링크를 주면 만들어주는 인터뷰 스크립트 JSON을 붙여넣으세요. (인물별 대사 + 한글 + 30분 챕터)</p>
-              <textarea value={json} onChange={e=>setJson(e.target.value)} rows={8} placeholder='{ "title":"...", "youtubeId":"...", "chapters":[ { "title":"Part 1 · 0:00–30:00", "lines":[ {"speaker":"Steven","en":"...","ko":"..."} ] } ] }' className={cx(inputCls,'font-mono text-xs')} />
+              <p className="text-xs text-black/60 dark:text-white/60">Claude에게 유튜브 링크를 주면 만들어주는 인터뷰 스크립트 JSON을 붙여넣으세요. (인물별 대사 + 한글 + 북마크 섹션)</p>
+              <textarea value={json} onChange={e=>setJson(e.target.value)} rows={8} placeholder='{ "title":"...", "youtubeId":"...", "chapters":[ { "title":"Part 1", "sections":[ { "title":"00:00 — 소주제", "lines":[ {"speaker":"Steven","en":"...","ko":"..."} ] } ] } ] }' className={cx(inputCls,'font-mono text-xs')} />
               <Btn variant="primary" onClick={addJson}>추가하고 학습 시작</Btn>
             </div>
           ) : (
@@ -221,7 +238,6 @@ function Home({ db, update, setRoute }){
         </Panel>
       )}
 
-      {/* library */}
       <section className="mt-12">
         <div className="flex items-center justify-between border-b border-black dark:border-white pb-2 mb-6">
           <Label>Library</Label>
@@ -260,12 +276,17 @@ function Home({ db, update, setRoute }){
     </div>
   );
 }
+const SegBtn = ({active, children, ...p}) => (
+  <button {...p} className={cx('px-4 py-2 text-sm font-bold uppercase tracking-wide', active?'bg-black text-white dark:bg-white dark:text-black':'bg-transparent')}>{children}</button>
+);
 
 /* ---------- study ---------- */
 function Study({ video, update }){
   const [chIdx, setChIdx] = useState(0);
   const [showKo, setShowKo] = useState(true);
   const [sel, setSel] = useState('');
+  const [activeSec, setActiveSec] = useState(0);
+  const scrollRef = useRef(null);
   const ch = video.chapters[Math.min(chIdx, video.chapters.length-1)];
   const editVideo = (fn) => update(d => fn(d.videos.find(x=>x.id===video.id)));
   const editCh = (fn) => editVideo(v => fn(v.chapters.find(c=>c.id===ch.id)));
@@ -280,6 +301,22 @@ function Study({ video, update }){
   });
   const chVocab = video.vocab.filter(x=>x.chapterId===ch.id);
 
+  const selectChapter = (i) => { setChIdx(i); setActiveSec(0); if(scrollRef.current) scrollRef.current.scrollTop = 0; };
+  // 북마크 점프 & 스크롤 스파이
+  const jumpTo = (i) => {
+    setActiveSec(i);
+    const c = scrollRef.current; if(!c) return;
+    const el = c.querySelector('[data-sec="'+i+'"]');
+    if(el) c.scrollTo({ top: Math.max(0, el.offsetTop - 12), behavior:'smooth' });
+  };
+  const onScroll = () => {
+    const c = scrollRef.current; if(!c) return;
+    const secs = [...c.querySelectorAll('[data-sec]')];
+    let a = 0;
+    for(const s of secs){ if(s.offsetTop <= c.scrollTop + 70) a = +s.dataset.sec; }
+    setActiveSec(a);
+  };
+
   return (
     <div className="fade-in pt-10">
       <Label className="text-black/50 dark:text-white/50">Study</Label>
@@ -288,7 +325,7 @@ function Study({ video, update }){
       {/* chapter tabs */}
       <div className="flex flex-wrap gap-0 mt-6 border border-black dark:border-white">
         {video.chapters.map((c,i)=>(
-          <button key={c.id} onClick={()=>setChIdx(i)}
+          <button key={c.id} onClick={()=>selectChapter(i)}
             className={cx('px-4 py-3 text-xs font-bold uppercase tracking-wide border-r border-black dark:border-white last:border-r-0 flex items-center gap-2',
               i===chIdx ? 'bg-black text-white dark:bg-white dark:text-black' : 'hover:bg-accent hover:text-black')}>
             {c.mastered && <span className="w-2 h-2 bg-accent inline-block"></span>}{c.title}
@@ -316,21 +353,52 @@ function Study({ video, update }){
               <span className="text-black/50 dark:text-white/50">HL {ch.highlights.length}</span>
             </div>
           </div>
+
+          {/* bookmark index */}
+          {ch.sections.length>1 && (
+            <div className="flex flex-wrap border-b border-black dark:border-white">
+              {ch.sections.map((sec,si)=>(
+                <button key={sec.id} onClick={()=>jumpTo(si)}
+                  className={cx('px-3 py-2 text-[11px] font-bold tracking-wide border-r border-b border-black/20 dark:border-white/25 flex items-center gap-1.5',
+                    si===activeSec ? 'bg-accent text-black' : 'hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black text-black/70 dark:text-white/70')}>
+                  <span className={cx('font-black', si===activeSec ? 'text-black' : 'text-accent')}>{String(si+1).padStart(2,'0')}</span>
+                  {sec.title || '—'}
+                </button>
+              ))}
+            </div>
+          )}
+
           {sel && (
             <div className="flex items-center gap-2 px-4 py-2.5 bg-accent text-black border-b border-black">
               <span className="flex-1 truncate text-sm font-medium">“{sel}”</span>
               <button onClick={addHighlight} className="uppercase tracking-wide text-[11px] font-black border border-black px-3 py-1.5 hover:bg-black hover:text-accent">형광펜</button>
             </div>
           )}
-          <div onMouseUp={onSelect} onTouchEnd={onSelect} className="p-4 space-y-4 leading-relaxed text-[15px] max-h-[52vh] overflow-y-auto">
-            {ch.lines.map((ln,i)=>(
-              <div key={i}>
-                {ln.speaker && <div className="mb-0.5"><Label className="text-accent">{ln.speaker}</Label></div>}
-                <span><Highlighted text={ln.en} phrases={ch.highlights} onRemove={removeHighlight} /></span>
-                {showKo && ln.ko && <div className="text-sm text-black/50 dark:text-white/50 mt-1">{ln.ko}</div>}
+
+          <div ref={scrollRef} onScroll={onScroll} onMouseUp={onSelect} onTouchEnd={onSelect}
+            className="relative p-4 leading-relaxed text-[15px] max-h-[52vh] overflow-y-auto">
+            {ch.sections.map((sec,si)=>(
+              <div key={sec.id} data-sec={si} className={cx(si>0 && 'mt-6 pt-4 border-t border-black/15 dark:border-white/20')}>
+                {sec.title && (
+                  <div className="mb-3 flex items-baseline gap-2">
+                    <span className="font-black text-accent text-sm">{String(si+1).padStart(2,'0')}</span>
+                    <Label>{sec.title}</Label>
+                  </div>
+                )}
+                <div className="space-y-4">
+                  {sec.lines.map((ln,i)=>(
+                    <div key={i}>
+                      {ln.speaker && <div className="mb-0.5"><Label className="text-accent">{ln.speaker}</Label></div>}
+                      <span><Highlighted text={ln.en} phrases={ch.highlights} onRemove={removeHighlight} /></span>
+                      {showKo && ln.ko && <div className="text-sm text-black/50 dark:text-white/50 mt-1">{ln.ko}</div>}
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
+            {ch.sections.length>1 && <div className="h-64" aria-hidden="true"></div>}
           </div>
+
           <div className="mt-auto flex items-center justify-between gap-2 px-4 py-3 border-t border-black dark:border-white">
             <p className="text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">드래그 → 형광펜 → 정리</p>
             <Btn size="sm" variant="primary" onClick={collectVocab}>단어 정리 → 단어장</Btn>
@@ -356,27 +424,38 @@ function Study({ video, update }){
   );
 }
 
+/* ---------- summary: 초안 + 저장 이력(누적) ---------- */
 function SummarySection({ ch, editCh }){
-  const saveRevision = () => { if(!ch.summary.trim()) return; editCh(c => c.revisions.unshift({ id:uid(), text:c.summary, savedAt:Date.now() })); };
-  const restore = (text) => editCh(c => c.summary = text);
-  const delRev = (id) => editCh(c => c.revisions = c.revisions.filter(r=>r.id!==id));
+  const saveSummary = () => {
+    const t = (ch.draft||'').trim(); if(!t) return;
+    editCh(c => c.summaries.unshift({ id:uid(), text:t, savedAt:Date.now() }));
+  };
+  const loadToDraft = (text) => editCh(c => c.draft = text);
+  const delEntry = (id) => editCh(c => c.summaries = c.summaries.filter(r=>r.id!==id));
   return (
     <div className="p-4">
-      <div className="flex items-center justify-between mb-3"><Label>Summary — 작성</Label><span className="text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">{wc(ch.summary)} words</span></div>
-      <textarea value={ch.summary} onChange={e=>editCh(c=>c.summary=e.target.value)} rows={5} placeholder="이 챕터를 영어로 요약해서 써보세요 (세션 전에 준비)" className="w-full border border-black dark:border-white/80 bg-transparent px-3 py-2.5 text-sm outline-none focus:bg-accent/10 placeholder:text-black/40 dark:placeholder:text-white/40" />
-      <div className="flex justify-end mt-2"><Btn size="sm" variant="dark" onClick={saveRevision}>수정본 저장</Btn></div>
-      {ch.revisions.length>0 && (
+      <div className="flex items-center justify-between mb-3">
+        <Label>Summary — 작성</Label>
+        <span className="text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">{wc(ch.draft)} words</span>
+      </div>
+      <textarea value={ch.draft} onChange={e=>editCh(c=>c.draft=e.target.value)} rows={5} placeholder="이 챕터를 영어로 요약해서 써보세요 (세션 전에 준비)" className="w-full border border-black dark:border-white/80 bg-transparent px-3 py-2.5 text-sm outline-none focus:bg-accent/10 placeholder:text-black/40 dark:placeholder:text-white/40" />
+      <div className="flex items-center justify-between mt-2">
+        <p className="text-[11px] text-black/40 dark:text-white/40">저장하면 아래 이력에 새 버전으로 쌓입니다 (덮어쓰기 없음)</p>
+        <Btn size="sm" variant="dark" onClick={saveSummary}>저장 → 이력에 추가</Btn>
+      </div>
+      {ch.summaries.length>0 && (
         <div className="mt-4 border-t border-black/15 dark:border-white/20 pt-3">
-          <Label className="text-black/60 dark:text-white/60">Revisions · {ch.revisions.length}</Label>
-          <div className="mt-2 space-y-2">
-            {ch.revisions.map((r,i)=>(
-              <div key={r.id} className="border border-black/15 dark:border-white/20 p-2.5">
+          <Label className="text-black/60 dark:text-white/60">History · {ch.summaries.length}개</Label>
+          <div className="mt-2 space-y-2 max-h-72 overflow-y-auto pr-1">
+            {ch.summaries.map((r,i)=>(
+              <div key={r.id} className={cx('border p-2.5', i===0 ? 'border-accent' : 'border-black/15 dark:border-white/20')}>
                 <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-black/50 dark:text-white/50 mb-1">
-                  <span className="font-bold text-black dark:text-white">V{ch.revisions.length - i}</span>
+                  <span className={cx('font-black px-1.5 py-0.5', i===0 ? 'bg-accent text-black' : 'text-black dark:text-white')}>V{ch.summaries.length - i}</span>
+                  {i===0 && <span className="font-bold text-accent">최신</span>}
                   <span>{new Date(r.savedAt).toLocaleString('ko-KR')}</span>
                   <span>· {wc(r.text)}w</span>
-                  <button onClick={()=>restore(r.text)} className="ml-auto font-bold text-black dark:text-white hover:text-accent">불러오기</button>
-                  <button onClick={()=>delRev(r.id)} className="hover:text-red-600">삭제</button>
+                  <button onClick={()=>loadToDraft(r.text)} className="ml-auto font-bold text-black dark:text-white hover:text-accent">작성칸으로</button>
+                  <button onClick={()=>delEntry(r.id)} className="hover:text-red-600">삭제</button>
                 </div>
                 <p className="text-sm whitespace-pre-wrap">{r.text}</p>
               </div>
@@ -469,13 +548,20 @@ function Quiz({ video, update }){
 function SummaryReview({ video }){
   return (
     <div className="border-l border-t border-black dark:border-white">
-      {video.chapters.map(c => (
-        <div key={c.id} className="border-r border-b border-black dark:border-white p-5">
-          <div className="flex items-center gap-2 mb-2">{c.mastered && <span className="w-2 h-2 bg-accent inline-block"></span>}<Label>{c.title}</Label></div>
-          {c.summary.trim() ? <p className="whitespace-pre-wrap text-sm leading-relaxed">{c.summary}</p> : <p className="text-sm text-black/40 dark:text-white/40">summary 미작성</p>}
-          <p className="mt-3 text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">{wc(c.summary)} words · 수정본 {c.revisions.length} · 세션에서 소리내어 읽고 첨삭</p>
-        </div>
-      ))}
+      {video.chapters.map(c => {
+        const latest = c.summaries[0];
+        return (
+          <div key={c.id} className="border-r border-b border-black dark:border-white p-5">
+            <div className="flex items-center gap-2 mb-2">{c.mastered && <span className="w-2 h-2 bg-accent inline-block"></span>}<Label>{c.title}</Label></div>
+            {latest
+              ? <p className="whitespace-pre-wrap text-sm leading-relaxed">{latest.text}</p>
+              : <p className="text-sm text-black/40 dark:text-white/40">저장된 summary 없음{(c.draft||'').trim() ? ' (작성중 초안 있음 — 학습 탭에서 저장하세요)' : ''}</p>}
+            <p className="mt-3 text-[11px] uppercase tracking-wide text-black/50 dark:text-white/50">
+              {latest ? `V${c.summaries.length} · ${new Date(latest.savedAt).toLocaleString('ko-KR')} · ${wc(latest.text)} words · ` : ''}이력 {c.summaries.length}개 · 소리내어 읽고 첨삭
+            </p>
+          </div>
+        );
+      })}
     </div>
   );
 }
