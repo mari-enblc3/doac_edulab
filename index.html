@@ -270,6 +270,10 @@ function Header({ route, setRoute }){
 }
 
 /* ---------- home ---------- */
+// 저장소에 포함된 패킷 — 버튼 한 번으로 불러오기
+const PACKETS = [
+  { title: 'Kokotajlo — AI 인터뷰', path: 'packets/daniel-kokotajlo-ai.json' },
+];
 function Home({ db, update, setRoute }){
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState('json');
@@ -278,6 +282,17 @@ function Home({ db, update, setRoute }){
   const addVideo = (v) => { update(d => d.videos.unshift(v)); setOpen(false); setUrl(''); setTitle(''); setJson(''); setPlain(''); setErr(''); setRoute({ name:'study', videoId: v.id }); };
   const addJson = () => { try { const obj = JSON.parse(json); if(!obj.chapters) throw new Error('chapters 없음'); addVideo(fromImport(obj)); } catch(e){ setErr('JSON 파싱 오류: ' + e.message); } };
   const addPlain = () => { if(!plain.trim()){ setErr('대본을 붙여넣으세요.'); return; } addVideo(fromPlain(plain, title.trim()||'제목 없는 영상', parseYouTubeId(url))); };
+  const loadPacket = async (p) => {
+    setErr('');
+    try {
+      const r = await fetch(p.path + '?v=' + Date.now());
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      const obj = await r.json();
+      const yid = obj.youtubeId || null;
+      if(yid && db.videos.some(v => v.youtubeId === yid)){ setErr('이미 라이브러리에 있는 영상이에요 — 아래 목록에서 여세요. (새 버전으로 교체하려면 기존 것을 삭제 후 다시 누르기)'); return; }
+      addVideo(fromImport(obj));
+    } catch(e){ setErr('패킷 로드 실패: ' + e.message); }
+  };
   const inputCls = 'w-full border border-black dark:border-white/80 bg-transparent px-4 py-3 text-sm outline-none focus:bg-accent/10 placeholder:text-black/40 dark:placeholder:text-white/40';
 
   return (
@@ -292,9 +307,13 @@ function Home({ db, update, setRoute }){
           세션 전에 준비하고, 세션에서 시험.
         </p>
         <div className="mt-8 flex flex-wrap gap-0">
+          {PACKETS.map(p => (
+            <Btn key={p.path} size="lg" variant="primary" onClick={()=>loadPacket(p)}>📥 {p.title}</Btn>
+          ))}
           <Btn size="lg" variant="dark" onClick={()=>setOpen(o=>!o)}>+ 영상 추가</Btn>
           <Btn size="lg" variant="ghost" className="border-l-0" onClick={()=>addVideo(fromImport(DEMO))}>데모 체험</Btn>
         </div>
+        {!open && err && <p className="mt-3 text-sm text-red-600">{err}</p>}
       </section>
 
       {open && (
