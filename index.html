@@ -63,7 +63,7 @@ function parseYouTubeId(url){
   return m ? m[1] : (/^[A-Za-z0-9_-]{11}$/.test(String(url).trim()) ? String(url).trim() : null);
 }
 function fromImport(obj){
-  const normLine = (l) => ({ speaker: l.speaker||'', en: l.en||'', ko: l.ko||'' });
+  const normLine = (l) => ({ speaker: l.speaker||'', en: l.en||'', ko: l.ko||'', ad: !!l.ad });
   const chapters = (obj.chapters||[]).map(c => ({
     id: uid(), title: c.title || 'Part',
     sections: (c.sections && c.sections.length)
@@ -115,7 +115,7 @@ function buildMd(v){
     c.sections.forEach((s,si) => {
       if(s.title) L.push('#### '+String(si+1).padStart(2,'0')+' · '+s.title,'');
       s.lines.forEach(ln => {
-        L.push('**'+(ln.speaker||'—')+':** '+markHl(ln.en, c.highlights));
+        L.push('**'+(ln.speaker||'—')+':** '+(ln.ad?'*(광고)* ':'')+markHl(ln.en, c.highlights));
         if(ln.ko) L.push('> '+ln.ko);
         L.push('');
       });
@@ -495,8 +495,13 @@ function Study({ video, update }){
                 )}
                 <div className="space-y-4">
                   {sec.lines.map((ln,i)=>(
-                    <div key={i}>
-                      {ln.speaker && <div className="mb-0.5"><Label className="text-accent">{ln.speaker}</Label></div>}
+                    <div key={i} className={ln.ad ? 'opacity-40' : undefined}>
+                      {ln.speaker && (
+                        <div className="mb-0.5 flex items-center gap-1.5">
+                          <Label className={ln.ad ? 'text-black/60 dark:text-white/60' : 'text-accent'}>{ln.speaker}</Label>
+                          {ln.ad && <span className="text-[9px] uppercase tracking-widest font-bold border border-black/40 dark:border-white/40 px-1 py-0.5 text-black/60 dark:text-white/60">광고</span>}
+                        </div>
+                      )}
                       <span><Highlighted text={ln.en} phrases={ch.highlights} onRemove={removeHighlight} /></span>
                       {showKo && ln.ko && <div className="text-sm text-black/50 dark:text-white/50 mt-1">{ln.ko}</div>}
                     </div>
